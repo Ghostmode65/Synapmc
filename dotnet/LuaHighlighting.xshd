@@ -1,0 +1,127 @@
+<?xml version="1.0"?>
+<SyntaxDefinition name="Lua" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Comment" foreground="#6A9955" fontStyle="italic" />
+  <Color name="String" foreground="#CE9178" />
+  <Color name="Keyword" foreground="#569CD6" fontWeight="bold" />
+  <Color name="Global" foreground="#F1FA8C" fontWeight="bold" />
+  <Color name="Local" foreground="#569CD6" fontWeight="bold" />
+  <Color name="Function" foreground="#BB86FC" fontWeight="bold" />
+  <Color name="BuiltinFunction" foreground="#4EC9B0" />
+  <Color name="Number" foreground="#B5CEA8" />
+  <Color name="Constant" foreground="#569CD6" />
+  <Color name="Library" foreground="#4EC9B0" />
+  
+  <RuleSet>
+    <Span color="Comment" begin="--\[\[" end="\]\]" />
+    <Span color="Comment" begin="--" />
+    
+    <Span color="String">
+      <Begin>"</Begin>
+      <End>"</End>
+      <RuleSet>
+        <Span begin="\\" end="." />
+      </RuleSet>
+    </Span>
+    
+    <Span color="String">
+      <Begin>'</Begin>
+      <End>'</End>
+      <RuleSet>
+        <Span begin="\\" end="." />
+      </RuleSet>
+    </Span>
+    
+    <Span color="String" begin="\[\[" end="\]\]" />
+    
+    <Keywords color="Keyword">
+      <Word>and</Word>
+      <Word>break</Word>
+      <Word>do</Word>
+      <Word>else</Word>
+      <Word>elseif</Word>
+      <Word>for</Word>
+      <Word>if</Word>
+      <Word>in</Word>
+      <Word>not</Word>
+      <Word>or</Word>
+      <Word>repeat</Word>
+      <Word>return</Word>
+      <Word>then</Word>
+      <Word>until</Word>
+      <Word>while</Word>
+      <Word>goto</Word>
+    </Keywords>
+    
+    <Keywords color="Function">
+      <Word>end</Word>
+    </Keywords>
+    
+    <Keywords color="Local">
+      <Word>local</Word>
+    </Keywords>
+    
+    <Keywords color="Function">
+      <Word>function</Word>
+    </Keywords>
+    
+    <Keywords color="Constant">
+      <Word>true</Word>
+      <Word>false</Word>
+      <Word>nil</Word>
+      <Word>self</Word>
+    </Keywords>
+    
+    <Keywords color="BuiltinFunction">
+      <Word>print</Word>
+      <Word>warn</Word>
+      <Word>error</Word>
+      <Word>assert</Word>
+      <Word>pcall</Word>
+      <Word>xpcall</Word>
+      <Word>require</Word>
+      <Word>type</Word>
+      <Word>tostring</Word>
+      <Word>tonumber</Word>
+      <Word>select</Word>
+      <Word>next</Word>
+      <Word>loadstring</Word>
+      <Word>load</Word>
+      <Word>pairs</Word>
+      <Word>ipairs</Word>
+      <Word>getmetatable</Word>
+      <Word>setmetatable</Word>
+      <Word>rawget</Word>
+      <Word>rawset</Word>
+      <Word>rawequal</Word>
+      <Word>rawlen</Word>
+      <Word>game</Word>
+      <Word>workspace</Word>
+      <Word>wait</Word>
+      <Word>spawn</Word>
+      <Word>delay</Word>
+      <Word>Instance</Word>
+    </Keywords>
+    
+    <Keywords color="Library">
+      <Word>math</Word>
+      <Word>string</Word>
+      <Word>table</Word>
+      <Word>io</Word>
+      <Word>os</Word>
+      <Word>debug</Word>
+      <Word>coroutine</Word>
+      <Word>package</Word>
+      <Word>_G</Word>
+      <Word>_VERSION</Word>
+    </Keywords>
+    
+    <Rule color="Number">
+      \b0[xX][0-9a-fA-F]+  # hex number
+      |    \b
+      (    \d+(\.[0-9]+)?   #number with optional floating point
+      |    \.[0-9]+         #or just starting with floating point
+      )
+      ([eE][+-]?[0-9]+)?   # optional exponent
+    </Rule>
+  </RuleSet>
+</SyntaxDefinition>
