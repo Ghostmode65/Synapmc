@@ -13,7 +13,7 @@ const settings = {
         github: "https://raw.githubusercontent.com/Ghostmode65/luaJ/refs/tags/v1.3.0/",
     
         ExternalLibraries: {
-            synapmc: {folder: "synapmc/", url: "https://raw.githubusercontent.com/Ghostmode65/Synapmc/refs/heads/main/luaj/library/remote.lua"},
+            synapmc: {folder: "synapmc/", url: "https://raw.githubusercontent.com/Ghostmode65/Synapmc/refs/tags/0.1/luaj/library/remote.lua"},
         },
 
         keybinds: {},
