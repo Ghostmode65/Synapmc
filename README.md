@@ -1,9 +1,8 @@
 # SynapMc
 
-Read the wiki on Prerequisites and Connecting.<br>
-https://github.com/Ghostmode65/Synapmc/wiki
-
+Synapmc a lua minecraft executor for jsmacros.<br>
 ![Logo](dotnet/logo.png)
 
-Synapmc a remote minecraft executor for lua.
+Read the wiki on Prerequisites and Connecting.<br>
+https://github.com/Ghostmode65/Synapmc/wiki<br>
 
