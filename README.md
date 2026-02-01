@@ -1,6 +1,6 @@
 # SynapMc
 
-Synapmc a lua minecraft executor for jsmacros.<br>
+Synapmc a lua minecraft loader for jsmacros.<br>
 ![Logo](dotnet/logo.png)
 
 Read the wiki on Prerequisites and Connecting.<br>
