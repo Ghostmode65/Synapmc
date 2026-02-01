@@ -1,3 +1,5 @@
+JsMacros:once("JoinServer", JavaWrapper:methodToJavaAsync(function()
+
 local Socket = luajava.bindClass("java.net.Socket")
 local InetSocketAddress = luajava.bindClass("java.net.InetSocketAddress")
 local InputStreamReader = luajava.bindClass("java.io.InputStreamReader")
@@ -52,3 +54,7 @@ reader:close()
 socket:close()
     ::reconnect::
 end
+    Chat:log("§cError exiting Synapmc-Connect, relaunch game to restart.")
+end))
+
+return true
