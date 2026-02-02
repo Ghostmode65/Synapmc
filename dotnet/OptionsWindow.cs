@@ -27,6 +27,7 @@ namespace SynapMc
             Foreground = Brushes.White;
             BorderThickness = new Thickness(1);
             BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66));
+            Topmost = true;
 
             UpdatedColors = new Dictionary<string, Color>(currentColors);
             UpdatedWorkspacePath = currentWorkspacePath;
@@ -164,7 +165,8 @@ namespace SynapMc
                 Owner = this,
                 Foreground = Brushes.White,
                 BorderThickness = new Thickness(1),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66))
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                Topmost = true
             };
 
             Grid grid = new Grid { Margin = new Thickness(15) };
@@ -275,7 +277,8 @@ namespace SynapMc
                 Owner = this,
                 Foreground = Brushes.White,
                 BorderThickness = new Thickness(1),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66))
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                Topmost = true
             };
 
             Grid grid = new Grid { Margin = new Thickness(15) };
@@ -382,11 +385,12 @@ namespace SynapMc
 
         private void OpenGlobalFile()
         {
-            string globalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "global.json");
+            string globalPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".jsmacros", "scripts", "projects", "Synapmc", "global.json");
             
             if (!File.Exists(globalPath))
             {
                 // Create default global.json
+                Directory.CreateDirectory(Path.GetDirectoryName(globalPath));
                 File.WriteAllText(globalPath, "[\n  \"myGlobal\",\n  \"anotherGlobal\"\n]");
             }
 
@@ -423,6 +427,7 @@ namespace SynapMc
             Foreground = Brushes.White;
             BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60));
             BorderThickness = new Thickness(1);
+            Topmost = true;
 
             Grid titleGrid = new Grid
             {

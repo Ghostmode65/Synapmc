@@ -109,6 +109,25 @@
             </Setter>
         </Style>
 
+        <Style x:Key="ClearButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseControlStyle}">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="#3C3C3C" CornerRadius="3" BorderThickness="1" BorderBrush="#3E3E42">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#252525"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="RemoteButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseControlStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="Margin" Value="2"/>
@@ -313,7 +332,11 @@
                     
                     <Grid Grid.Row="1">
                         <TabControl Name="ScriptTabs" Background="Transparent" BorderThickness="0"/>
-                        <Button Content="+" HorizontalAlignment="Right" VerticalAlignment="Top" Width="20" Height="20" Margin="0,2,5,0" Style="{StaticResource WindowButtonStyle}" Click="AddTab_Click"/>
+                        <StackPanel HorizontalAlignment="Right" VerticalAlignment="Top" Orientation="Horizontal" Margin="0,2,5,0">
+                            <Button Content="↶" Width="20" Height="20" Margin="0,0,2,0" Style="{StaticResource WindowButtonStyle}" Click="Undo_Click" ToolTip="Undo (Ctrl+Z)"/>
+                            <Button Content="↷" Width="20" Height="20" Margin="0,0,2,0" Style="{StaticResource WindowButtonStyle}" Click="Redo_Click" ToolTip="Redo (Ctrl+Y)"/>
+                            <Button Content="+" Width="20" Height="20" Style="{StaticResource WindowButtonStyle}" Click="AddTab_Click" ToolTip="New Tab"/>
+                        </StackPanel>
                     </Grid>
                 </Grid>
             </Border>
@@ -321,20 +344,34 @@
                 <Border.Effect>
                     <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="0" Opacity="0.3"/>
                 </Border.Effect>
-                <TreeView Name="ScriptTree" Background="Transparent" BorderThickness="0">
-                    <TreeView.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="New Script" Click="ListContext_NewScript_Click"/><MenuItem Header="New Folder" Click="ListContext_NewFolder_Click"/><MenuItem Header="Refresh" Click="ListContext_Refresh_Click"/>
-                        </ContextMenu>
-                    </TreeView.ContextMenu>
-                </TreeView>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    
+                    <!-- Search Input -->
+                    <TextBox Grid.Row="0" x:Name="WorkspaceSearchInput" Height="24" Margin="5" Background="#1E1E1E" Foreground="White" BorderBrush="#3E3E42" BorderThickness="1" Padding="5,3" FontSize="10" Text="Search..." GotFocus="WorkspaceSearchInput_GotFocus" LostFocus="WorkspaceSearchInput_LostFocus" KeyDown="WorkspaceSearchInput_KeyDown"/>
+                    
+                    <TreeView Grid.Row="1" Name="ScriptTree" Background="Transparent" BorderThickness="0">
+                        <TreeView.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Add Bookmark..." Click="AddBookmark_Click"/>
+                                <Separator/>
+                                <MenuItem Header="Open in File Explorer" Click="OpenInExplorer_Click"/>
+                                <Separator/>
+                                <MenuItem Header="New Script" Click="ListContext_NewScript_Click"/><MenuItem Header="New Folder" Click="ListContext_NewFolder_Click"/><MenuItem Header="Refresh" Click="ListContext_Refresh_Click"/>
+                            </ContextMenu>
+                        </TreeView.ContextMenu>
+                    </TreeView>
+                </Grid>
             </Border>
         </Grid>
         <Grid Grid.Row="2" Margin="10,0,10,10">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal">
                 <Button Content="Execute" Width="80" Style="{StaticResource SynapseButtonStyle}" Click="Execute_Click"/>
-                <Button Content="Clear" Width="80" Style="{StaticResource SynapseButtonStyle}" Click="Clear_Click"/>
+                <Button Content="Clear" Width="80" Style="{StaticResource ClearButtonStyle}" Click="Clear_Click"/>
                 <Button Content="Open File" Width="80" Style="{StaticResource SynapseButtonStyle}" Click="OpenFile_Click"/>
                 <Button Content="Save File" Width="80" Style="{StaticResource SynapseButtonStyle}" Click="SaveFile_Click"/>
             </StackPanel>

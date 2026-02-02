@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml;
@@ -45,11 +46,19 @@ namespace SynapMc
     public partial class MainWindow : Window
     {
         private string _scriptsRoot;
-        private readonly string _globalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "global.json");
+        private readonly string _globalPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".jsmacros", "scripts", "projects", "Synapmc", "global.json");
         private readonly string _settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+        private readonly string _bookmarksPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bookmarks.json");
+        private readonly string _unicodeBookmarksPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unicode_bookmarks.json");
+        private readonly string _sessionPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "session.json");
+        private readonly string _tempSavePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".jsmacros", "scripts", "projects", "Synapmc", "temp", "saves");
         private IHighlightingDefinition? _luaHighlighting;
         private List<string> _globalVariables = new List<string>();
+        private List<string> _bookmarkedFolders = new List<string>();
+        private List<string> _bookmarkedUnicode = new List<string>();
         private ICSharpCode.AvalonEdit.Search.SearchPanel? _currentSearchPanel;
+        private bool _dontAskDeleteConfirmation = false;
+        private bool _dontAskUnsavedConfirmation = false;
         private bool _remoteServerEnabled = false;
         private TcpListener? _tcpListener;
         private List<ClientInfo> _connectedClients = new List<ClientInfo>();
@@ -72,15 +81,23 @@ namespace SynapMc
             LoadSettings();
             LoadLuaHighlighting();
             LoadGlobalVariables();
+            LoadBookmarks();
+            LoadUnicodeBookmarks();
             if (!Directory.Exists(_scriptsRoot)) Directory.CreateDirectory(_scriptsRoot);
+            if (!Directory.Exists(_tempSavePath)) Directory.CreateDirectory(_tempSavePath);
             LoadScriptTree();
-            AddNewTab();
+            
+            // Restore previous session
+            RestoreSession();
             
             // Add Ctrl+F shortcut for search
             this.PreviewKeyDown += MainWindow_PreviewKeyDown;
             
             // Initialize remote button border
             UpdateRemoteButtonBorder();
+            
+            // Hook closing event
+            this.Closing += MainWindow_Closing;
         }
 
         private void LoadSettings()
@@ -101,12 +118,22 @@ namespace SynapMc
                         {
                             this.Topmost = alwaysOnTop;
                         }
+                        if (settings.ContainsKey("DontAskDeleteConfirmation") && bool.TryParse(settings["DontAskDeleteConfirmation"], out bool dontAsk))
+                        {
+                            _dontAskDeleteConfirmation = dontAsk;
+                        }
+                        if (settings.ContainsKey("DontAskUnsavedConfirmation") && bool.TryParse(settings["DontAskUnsavedConfirmation"], out bool dontAskUnsaved))
+                        {
+                            _dontAskUnsavedConfirmation = dontAskUnsaved;
+                        }
                         return;
                     }
                 }
             }
             catch { }
-            _scriptsRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "scripts");
+            // Default to .jsmacros/scripts/macros in roaming
+            string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            _scriptsRoot = Path.Combine(roaming, ".jsmacros", "scripts", "macros");
         }
 
         private void SaveSettings()
@@ -116,7 +143,9 @@ namespace SynapMc
                 var settings = new Dictionary<string, string>
                 {
                     ["WorkspacePath"] = _scriptsRoot,
-                    ["AlwaysOnTop"] = this.Topmost.ToString()
+                    ["AlwaysOnTop"] = this.Topmost.ToString(),
+                    ["DontAskDeleteConfirmation"] = _dontAskDeleteConfirmation.ToString(),
+                    ["DontAskUnsavedConfirmation"] = _dontAskUnsavedConfirmation.ToString()
                 };
                 string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(_settingsPath, json);
@@ -132,6 +161,67 @@ namespace SynapMc
                 SearchTextBox.Focus();
                 SearchTextBox.SelectAll();
                 e.Handled = true;
+            }
+            else if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                // Ctrl+Z - Undo
+                if (GetCurrentEditor() is TextEditor editor)
+                {
+                    editor.Undo();
+                    e.Handled = true;
+                }
+            }
+            else if (e.Key == Key.Y && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                // Ctrl+Y - Redo
+                if (GetCurrentEditor() is TextEditor editor)
+                {
+                    editor.Redo();
+                    e.Handled = true;
+                }
+            }
+            else if (e.Key == Key.F2)
+            {
+                // F2 to rename tab or workspace item
+                if (ScriptTabs.IsFocused || ScriptTabs.IsKeyboardFocusWithin)
+                {
+                    // Rename current tab
+                    if (ScriptTabs.SelectedItem is TabItem tab && tab.Header is StackPanel sp && sp.Children[0] is TextBlock tb)
+                    {
+                        string oldName = tb.Text;
+                        string newName = PromptDialog.Show("Rename Tab", "Name:", oldName);
+                        if (!string.IsNullOrWhiteSpace(newName) && newName != oldName)
+                        {
+                            tb.Text = newName;
+                        }
+                        e.Handled = true;
+                    }
+                }
+                else if (ScriptTree.SelectedItem is TreeViewItem item && item.Tag is string path)
+                {
+                    // Rename workspace file/folder
+                    Context_Rename_Click(path);
+                    e.Handled = true;
+                }
+            }
+            else if (e.Key == Key.Delete)
+            {
+                // Delete key for tabs or workspace items
+                if (ScriptTabs.IsFocused || ScriptTabs.IsKeyboardFocusWithin)
+                {
+                    // Delete current tab
+                    if (ScriptTabs.SelectedItem is TabItem tab)
+                    {
+                        DeleteTab(tab);
+                        e.Handled = true;
+                    }
+                }
+                else if (ScriptTree.SelectedItem is TreeViewItem item && item.Tag is string path)
+                {
+                    // Delete workspace file/folder
+                    Context_Delete_Click(path);
+                    e.Handled = true;
+                }
             }
             else if (e.Key == Key.Escape && SearchBar.Visibility == Visibility.Visible)
             {
@@ -164,6 +254,83 @@ namespace SynapMc
                     string json = File.ReadAllText(_globalPath);
                     _globalVariables = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
                 }
+                else
+                {
+                    // Default global list
+                    _globalVariables = new List<string>
+                    {
+                        "luaj",
+                        "luajava",
+                        "Chat",
+                        "Client",
+                        "FS",
+                        "GlobalVars",
+                        "Hud",
+                        "JavaUtils",
+                        "JavaWrapper",
+                        "JsMacros",
+                        "KeyBind",
+                        "Player",
+                        "PositionCommon",
+                        "Reflection",
+                        "Request",
+                        "Time",
+                        "Utils",
+                        "World"
+                    };
+                    
+                    // Save the default list to file
+                    string json = JsonSerializer.Serialize(_globalVariables, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(_globalPath, json);
+                }
+            }
+            catch { }
+        }
+
+        private void LoadBookmarks()
+        {
+            _bookmarkedFolders.Clear();
+            try
+            {
+                if (File.Exists(_bookmarksPath))
+                {
+                    string json = File.ReadAllText(_bookmarksPath);
+                    _bookmarkedFolders = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+                }
+            }
+            catch { }
+        }
+
+        private void SaveBookmarks()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(_bookmarkedFolders, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_bookmarksPath, json);
+            }
+            catch { }
+        }
+
+        private void LoadUnicodeBookmarks()
+        {
+            _bookmarkedUnicode.Clear();
+            try
+            {
+                if (File.Exists(_unicodeBookmarksPath))
+                {
+                    string json = File.ReadAllText(_unicodeBookmarksPath);
+                    _bookmarkedUnicode = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+                }
+            }
+            catch { }
+        }
+
+        private void SaveUnicodeBookmarks()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(_bookmarkedUnicode, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_unicodeBookmarksPath, json);
             }
             catch { }
         }
@@ -171,29 +338,81 @@ namespace SynapMc
         private void LoadScriptTree()
         {
             ScriptTree.Items.Clear();
-            PopulateTree(_scriptsRoot, ScriptTree);
+            
+            // Add bookmarked folders first
+            foreach (var bookmarkedPath in _bookmarkedFolders.ToList())
+            {
+                if (Directory.Exists(bookmarkedPath))
+                {
+                    TreeViewItem item = CreateTreeItem("📁 " + Path.GetFileName(bookmarkedPath), true, bookmarkedPath, true);
+                    ScriptTree.Items.Add(item);
+                    PopulateTree(bookmarkedPath, item, true);
+                }
+                else
+                {
+                    // Remove bookmark if folder doesn't exist
+                    _bookmarkedFolders.Remove(bookmarkedPath);
+                    SaveBookmarks();
+                }
+            }
+            
+            // Add regular workspace folder
+            PopulateTree(_scriptsRoot, ScriptTree, false);
         }
 
-        private void PopulateTree(string currentDir, ItemsControl parent)
+        private void PopulateTree(string currentDir, ItemsControl parent, bool isBookmarked)
         {
             foreach (var dir in Directory.GetDirectories(currentDir).OrderBy(d => d))
             {
-                TreeViewItem item = CreateTreeItem("📁 " + Path.GetFileName(dir), true, dir);
+                TreeViewItem item = CreateTreeItem("📁 " + Path.GetFileName(dir), true, dir, isBookmarked);
                 parent.Items.Add(item);
-                PopulateTree(dir, item);
+                PopulateTree(dir, item, isBookmarked);
             }
             foreach (var file in Directory.GetFiles(currentDir).Where(f => f.EndsWith(".lua") || f.EndsWith(".txt")).OrderBy(f => f))
             {
-                parent.Items.Add(CreateTreeItem("📄 " + Path.GetFileName(file), false, file));
+                parent.Items.Add(CreateTreeItem("📄 " + Path.GetFileName(file), false, file, isBookmarked));
             }
         }
 
-        private TreeViewItem CreateTreeItem(string header, bool isFolder, string fullPath)
+        private TreeViewItem CreateTreeItem(string header, bool isFolder, string fullPath, bool isBookmarked = false)
         {
-            TreeViewItem item = new TreeViewItem { Header = header, Tag = fullPath };
+            TextBlock textBlock = new TextBlock { Text = header };
+            
+            // Check if this file is currently opened in any tab
+            bool isOpened = false;
             if (!isFolder)
             {
-                item.MouseDoubleClick += (s, e) => { if (IsInHeader(e.OriginalSource as DependencyObject, item)) AddNewTab(Path.GetFileName(fullPath), File.ReadAllText(fullPath)); e.Handled = true; };
+                foreach (TabItem tab in ScriptTabs.Items)
+                {
+                    if (tab.Tag is string tabPath && tabPath == fullPath)
+                    {
+                        isOpened = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (isOpened)
+            {
+                textBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0)); // Dull orange
+            }
+            else if (isBookmarked)
+            {
+                textBlock.Foreground = new SolidColorBrush(Color.FromRgb(100, 149, 237)); // Cornflower blue
+            }
+            
+            TreeViewItem item = new TreeViewItem { Header = textBlock, Tag = fullPath };
+            if (!isFolder)
+            {
+                item.MouseDoubleClick += (s, e) => 
+                { 
+                    if (IsInHeader(e.OriginalSource as DependencyObject, item)) 
+                    {
+                        // Open or switch to existing tab
+                        OpenOrSwitchToTab(fullPath);
+                        e.Handled = true;
+                    }
+                };
             }
 
             ContextMenu menu = new ContextMenu { StaysOpen = false };
@@ -202,6 +421,13 @@ namespace SynapMc
                 MenuItem ns = new MenuItem { Header = "New Script" }; ns.Click += (s, e) => CreateNewFile(fullPath, false);
                 MenuItem nf = new MenuItem { Header = "New Folder" }; nf.Click += (s, e) => CreateNewFile(fullPath, true);
                 menu.Items.Add(ns); menu.Items.Add(nf); menu.Items.Add(new Separator());
+                
+                // Add bookmark option for folders
+                bool currentlyBookmarked = _bookmarkedFolders.Contains(fullPath);
+                MenuItem bookmark = new MenuItem { Header = currentlyBookmarked ? "Remove Bookmark" : "Add Bookmark" };
+                bookmark.Click += (s, e) => ToggleBookmark(fullPath);
+                menu.Items.Add(bookmark);
+                menu.Items.Add(new Separator());
             }
             else
             {
@@ -211,7 +437,22 @@ namespace SynapMc
 
             MenuItem ren = new MenuItem { Header = "Rename" }; ren.Click += (s, e) => Context_Rename_Click(fullPath);
             MenuItem del = new MenuItem { Header = "Delete" }; del.Click += (s, e) => Context_Delete_Click(fullPath);
-            menu.Items.Add(ren); menu.Items.Add(del);
+            MenuItem openExplorer = new MenuItem { Header = "Open in File Explorer" };
+            openExplorer.Click += (s, e) =>
+            {
+                if (File.Exists(fullPath))
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
+                }
+                else if (Directory.Exists(fullPath))
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", $"\"{fullPath}\"");
+                }
+            };
+            menu.Items.Add(ren); 
+            menu.Items.Add(del);
+            menu.Items.Add(new Separator());
+            menu.Items.Add(openExplorer);
             item.ContextMenu = menu;
             return item;
         }
@@ -238,8 +479,113 @@ namespace SynapMc
             return true;
         }
 
+        private void OpenOrSwitchToTab(string filePath)
+        {
+            // Check if file is already open
+            foreach (TabItem tab in ScriptTabs.Items)
+            {
+                if (tab.Tag is string tabPath && tabPath == filePath)
+                {
+                    ScriptTabs.SelectedItem = tab;
+                    return;
+                }
+            }
+            
+            // File not open, create new tab
+            if (File.Exists(filePath))
+            {
+                string content = File.ReadAllText(filePath);
+                string fileName = Path.GetFileName(filePath);
+                AddNewTab(fileName, content, filePath);
+                // Don't reload tree - just update the specific file's color
+                UpdateFileColorInTree(filePath, true);
+            }
+        }
+        
+        private void UpdateFileColorInTree(string filePath, bool isOpened)
+        {
+            // Update the file's color in the tree without reloading
+            foreach (TreeViewItem item in ScriptTree.Items)
+            {
+                if (FindTreeItemByPath(item, filePath) is TreeViewItem foundItem && foundItem.Header is TextBlock tb)
+                {
+                    tb.Foreground = isOpened 
+                        ? new SolidColorBrush(Color.FromRgb(255, 140, 0)) 
+                        : Brushes.White;
+                    break;
+                }
+            }
+        }
+        
+        private TreeViewItem? FindTreeItemByPath(TreeViewItem item, string path)
+        {
+            if (item.Tag?.ToString() == path)
+                return item;
+                
+            foreach (var child in item.Items)
+            {
+                if (child is TreeViewItem childItem)
+                {
+                    var found = FindTreeItemByPath(childItem, path);
+                    if (found != null)
+                        return found;
+                }
+            }
+            
+            return null;
+        }
+
         private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e) { if (e.ChangedButton == MouseButton.Left) this.DragMove(); }
-        private void Close_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
+        private void Close_Click(object sender, RoutedEventArgs e)
+        {
+            // Check for unsaved scripts
+            var unsavedTabs = new List<string>();
+            foreach (TabItem tab in ScriptTabs.Items)
+            {
+                if (tab.Content is TextEditor editor && tab.Tag is string filePath)
+                {
+                    // Check if file exists and content differs
+                    if (File.Exists(filePath))
+                    {
+                        string savedContent = File.ReadAllText(filePath);
+                        if (editor.Text != savedContent)
+                        {
+                            if (tab.Header is StackPanel sp && sp.Children[0] is TextBlock tb)
+                                unsavedTabs.Add(tb.Text);
+                        }
+                    }
+                }
+                else if (tab.Content is TextEditor ed && !string.IsNullOrWhiteSpace(ed.Text))
+                {
+                    // New unsaved tab with content
+                    if (tab.Header is StackPanel sp && sp.Children[0] is TextBlock tb)
+                        unsavedTabs.Add(tb.Text);
+                }
+            }
+            
+            if (unsavedTabs.Count > 0 && !_dontAskUnsavedConfirmation)
+            {
+                string tabList = unsavedTabs.Count <= 5 
+                    ? string.Join(", ", unsavedTabs) 
+                    : string.Join(", ", unsavedTabs.Take(3)) + $", and {unsavedTabs.Count - 3} more";
+                string message = $"You have {unsavedTabs.Count} unsaved script(s): {tabList}\n\nClose anyway?";
+                
+                var result = ShowConfirmDialogWithCheckbox("Unsaved Scripts", message, "Don't ask me again");
+                if (!result.confirmed)
+                {
+                    return; // Don't close
+                }
+                if (result.dontAskAgain)
+                {
+                    _dontAskUnsavedConfirmation = true;
+                    SaveSettings();
+                }
+            }
+            
+            // Save session and temp files
+            SaveSession();
+            Application.Current.Shutdown();
+        }
         private void Minimize_Click(object sender, RoutedEventArgs e) => this.WindowState = WindowState.Minimized;
         private void Fullscreen_Click(object sender, RoutedEventArgs e)
         {
@@ -254,21 +600,73 @@ namespace SynapMc
         }
 
         private void AddTab_Click(object sender, RoutedEventArgs e) => AddNewTab();
-        private void AddNewTab(string? title = null, string content = "")
+        
+        private void Undo_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetCurrentEditor() is TextEditor editor)
+            {
+                editor.Undo();
+            }
+        }
+        
+        private void Redo_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetCurrentEditor() is TextEditor editor)
+            {
+                editor.Redo();
+            }
+        }
+        
+        private void AddNewTab(string? title = null, string content = "", string? filePath = null)
         {
             if (string.IsNullOrEmpty(title))
             {
                 var used = new HashSet<int>();
-                foreach (TabItem it in ScriptTabs.Items) if (it.Header is StackPanel sp && sp.Children[0] is TextBlock tb) { var m = Regex.Match(tb.Text, @"^Script (\d+)\.lua$"); if (m.Success) used.Add(int.Parse(m.Groups[1].Value)); }
-                int n = 1; while (used.Contains(n)) n++;
-                title = $"Script {n}.lua";
+                foreach (TabItem it in ScriptTabs.Items) 
+                {
+                    if (it.Header is StackPanel sp && sp.Children[0] is TextBlock tb) 
+                    { 
+                        var m = Regex.Match(tb.Text, @"^Script (\d+)$"); 
+                        if (m.Success) 
+                            used.Add(int.Parse(m.Groups[1].Value)); 
+                    }
+                }
+                int n = 1; 
+                while (used.Contains(n)) n++;
+                title = $"Script {n}";
             }
 
             TabItem tab = new TabItem();
+            tab.Tag = filePath; // Store file path for tracking
             
             // Create header with text
             StackPanel headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
-            TextBlock tbHeader = new TextBlock { Text = title, VerticalAlignment = VerticalAlignment.Center, Style = (Style)FindResource("TabHeaderTextStyle") };
+            
+            // Remove .lua extension from display
+            string displayTitle = title.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) 
+                ? title.Substring(0, title.Length - 4) 
+                : title;
+            
+            // Limit to 25 characters and shrink font if needed
+            TextBlock tbHeader = new TextBlock { 
+                Text = displayTitle, 
+                VerticalAlignment = VerticalAlignment.Center, 
+                Style = (Style)FindResource("TabHeaderTextStyle"),
+                MaxWidth = 150
+            };
+            
+            if (displayTitle.Length > 25)
+            {
+                // Shrink font size for long names
+                tbHeader.FontSize = 10;
+                
+                // If still too small, truncate the text
+                if (displayTitle.Length > 35)
+                {
+                    tbHeader.Text = displayTitle.Substring(0, 35) + "...";
+                }
+            }
+            
             headerPanel.Children.Add(tbHeader);
             tab.Header = headerPanel;
 
@@ -302,11 +700,18 @@ namespace SynapMc
             // Add global variable highlighter
             ed.TextArea.TextView.LineTransformers.Add(new GlobalVariableColorizer(_globalVariables));
             
+            // Add hex color highlighter
+            ed.TextArea.TextView.LineTransformers.Add(new HexColorHighlighter());
+            
             // Add right-click context menu for color picker and code snippets
             ContextMenu editorContextMenu = new ContextMenu { StaysOpen = false };
             MenuItem insertColorItem = new MenuItem { Header = "Insert Color..." };
             insertColorItem.Click += (s, ev) => ShowColorPickerDialog(ed);
             editorContextMenu.Items.Add(insertColorItem);
+            
+            MenuItem insertUnicodeItem = new MenuItem { Header = "Insert Unicode..." };
+            insertUnicodeItem.Click += (s, ev) => ShowUnicodePickerDialog(ed);
+            editorContextMenu.Items.Add(insertUnicodeItem);
             
             editorContextMenu.Items.Add(new Separator());
             
@@ -355,9 +760,124 @@ namespace SynapMc
 
         private void RequestCloseTab(TabItem tab) 
         { 
-            if (tab.Content is TextEditor ed && !string.IsNullOrEmpty(ed.Text)) 
-                if (!ShowConfirmDialog("Close Tab", "Close script with content?")) 
-                    return; 
+            DeleteTab(tab);
+        }
+
+        private void DeleteTab(TabItem tab)
+        {
+            if (tab.Content is TextEditor ed && !string.IsNullOrEmpty(ed.Text))
+            {
+                if (!_dontAskDeleteConfirmation)
+                {
+                    var dialog = new Window 
+                    { 
+                        Width = 400, 
+                        Height = 240, 
+                        Title = "Close Tab", 
+                        WindowStyle = WindowStyle.None, 
+                        ResizeMode = ResizeMode.NoResize, 
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)), 
+                        WindowStartupLocation = WindowStartupLocation.CenterOwner, 
+                        Owner = this, 
+                        Foreground = Brushes.White, 
+                        BorderThickness = new Thickness(1),
+                        Topmost = true
+                    };
+                    
+                    var gradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+                    gradient.GradientStops.Add(new GradientStop(Color.FromRgb(0, 217, 255), 0));
+                    gradient.GradientStops.Add(new GradientStop(Color.FromRgb(123, 104, 238), 1));
+                    dialog.BorderBrush = gradient;
+
+                    var stackPanel = new StackPanel { Margin = new Thickness(20) };
+                    
+                    var titleBlock = new TextBlock 
+                    { 
+                        Text = "Close Tab", 
+                        FontSize = 16, 
+                        FontWeight = FontWeights.Bold, 
+                        Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0)), 
+                        Margin = new Thickness(0, 0, 0, 15) 
+                    };
+                    stackPanel.Children.Add(titleBlock);
+                    
+                    var messageBlock = new TextBlock 
+                    { 
+                        Text = "Close script with content?\nThis action cannot be undone.", 
+                        Margin = new Thickness(0, 0, 0, 10), 
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.White
+                    };
+                    stackPanel.Children.Add(messageBlock);
+                    
+                    var statsBlock = new TextBlock 
+                    { 
+                        Text = $"Lines: {ed.LineCount}  |  Characters: {ed.Text.Length}", 
+                        Margin = new Thickness(0, 0, 0, 15), 
+                        FontSize = 11,
+                        Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180))
+                    };
+                    stackPanel.Children.Add(statsBlock);
+                    
+                    // Add checkbox for "Don't ask me again"
+                    CheckBox dontAskCheckBox = new CheckBox
+                    {
+                        Content = "Don't ask me again",
+                        Foreground = Brushes.White,
+                        Margin = new Thickness(0, 0, 0, 15),
+                        IsChecked = false
+                    };
+                    stackPanel.Children.Add(dontAskCheckBox);
+
+                    var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+                    
+                    var closeTabButton = new Button 
+                    { 
+                        Content = "Close", 
+                        Width = 90, 
+                        Height = 32, 
+                        Margin = new Thickness(0, 0, 10, 0), 
+                        Background = new SolidColorBrush(Color.FromRgb(220, 50, 50)), 
+                        Foreground = Brushes.White, 
+                        BorderThickness = new Thickness(1), 
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(255, 80, 80)),
+                        FontWeight = FontWeights.Bold
+                    };
+                    closeTabButton.Click += (s, ev) => 
+                    { 
+                        if (dontAskCheckBox.IsChecked == true)
+                        {
+                            _dontAskDeleteConfirmation = true;
+                            SaveSettings();
+                        }
+                        ScriptTabs.Items.Remove(tab);
+                        _tabClientAttachments.Remove(tab);
+                        if (ScriptTabs.Items.Count == 0)
+                            AddNewTab();
+                        dialog.Close(); 
+                    };
+                    
+                    var cancelButton = new Button 
+                    { 
+                        Content = "Cancel", 
+                        Width = 90, 
+                        Height = 32, 
+                        Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), 
+                        Foreground = Brushes.White, 
+                        BorderThickness = new Thickness(1), 
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) 
+                    };
+                    cancelButton.Click += (s, ev) => dialog.Close();
+                    
+                    buttonPanel.Children.Add(closeTabButton);
+                    buttonPanel.Children.Add(cancelButton);
+                    stackPanel.Children.Add(buttonPanel);
+                    
+                    dialog.Content = stackPanel;
+                    dialog.ShowDialog();
+                    return;
+                }
+            }
             ScriptTabs.Items.Remove(tab); 
             _tabClientAttachments.Remove(tab); // Clean up attachments
             if (ScriptTabs.Items.Count == 0) 
@@ -454,6 +974,544 @@ namespace SynapMc
             pickerWindow.ShowDialog();
         }
 
+        private void ShowUnicodePickerDialog(TextEditor editor)
+        {
+            Window unicodeWindow = new Window
+            {
+                Width = 600,
+                Height = 500,
+                Title = "Unicode Symbols",
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                Background = new SolidColorBrush(Color.FromRgb(40, 40, 40)),
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                Foreground = Brushes.White,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                BorderThickness = new Thickness(1),
+                Topmost = true,
+                AllowsTransparency = false
+            };
+            
+            // Make window draggable
+            unicodeWindow.MouseLeftButtonDown += (s, e) => 
+            {
+                if (e.ChangedButton == MouseButton.Left)
+                    unicodeWindow.DragMove();
+            };
+
+            Grid mainGrid = new Grid { Margin = new Thickness(15) };
+            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            // Title bar with X button
+            Grid titleGrid = new Grid();
+            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            TextBlock titleBlock = new TextBlock
+            {
+                Text = "Unicode Symbols",
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0)),
+                Margin = new Thickness(0, 0, 0, 10),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(titleBlock, 0);
+            titleGrid.Children.Add(titleBlock);
+
+            Button closeBtn = new Button
+            {
+                Content = "✕",
+                Width = 20,
+                Height = 20,
+                FontSize = 14,
+                Background = Brushes.Transparent,
+                Foreground = Brushes.White,
+                BorderThickness = new Thickness(0),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            closeBtn.Click += (s, e) => unicodeWindow.Close();
+            Grid.SetColumn(closeBtn, 1);
+            titleGrid.Children.Add(closeBtn);
+
+            Grid.SetRow(titleGrid, 0);
+            mainGrid.Children.Add(titleGrid);
+
+            TabControl tabControl = new TabControl 
+            { 
+                Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)), 
+                BorderThickness = new Thickness(0)
+            };
+            
+            // Create custom TabControl template to prevent row swapping
+            ControlTemplate tabControlTemplate = new ControlTemplate(typeof(TabControl));
+            FrameworkElementFactory gridFactory = new FrameworkElementFactory(typeof(Grid));
+            gridFactory.SetValue(Grid.BackgroundProperty, new SolidColorBrush(Color.FromRgb(30, 30, 30)));
+            
+            // Row definitions
+            FrameworkElementFactory rowDef1 = new FrameworkElementFactory(typeof(RowDefinition));
+            rowDef1.SetValue(RowDefinition.HeightProperty, GridLength.Auto);
+            FrameworkElementFactory rowDef2 = new FrameworkElementFactory(typeof(RowDefinition));
+            rowDef2.SetValue(RowDefinition.HeightProperty, new GridLength(1, GridUnitType.Star));
+            gridFactory.AppendChild(rowDef1);
+            gridFactory.AppendChild(rowDef2);
+            
+            // ScrollViewer for tabs (prevents wrapping/swapping)
+            FrameworkElementFactory scrollFactory = new FrameworkElementFactory(typeof(ScrollViewer));
+            scrollFactory.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
+            scrollFactory.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
+            scrollFactory.SetValue(Grid.RowProperty, 0);
+            
+            // TabPanel inside ScrollViewer
+            FrameworkElementFactory tabPanelFactory = new FrameworkElementFactory(typeof(TabPanel));
+            tabPanelFactory.Name = "HeaderPanel";
+            tabPanelFactory.SetValue(Panel.IsItemsHostProperty, true);
+            tabPanelFactory.SetValue(Panel.BackgroundProperty, Brushes.Transparent);
+            scrollFactory.AppendChild(tabPanelFactory);
+            gridFactory.AppendChild(scrollFactory);
+            
+            // Content presenter
+            FrameworkElementFactory contentPresenterFactory = new FrameworkElementFactory(typeof(ContentPresenter));
+            contentPresenterFactory.Name = "PART_SelectedContentHost";
+            contentPresenterFactory.SetValue(ContentPresenter.ContentSourceProperty, "SelectedContent");
+            contentPresenterFactory.SetValue(Grid.RowProperty, 1);
+            gridFactory.AppendChild(contentPresenterFactory);
+            
+            tabControlTemplate.VisualTree = gridFactory;
+            tabControl.Template = tabControlTemplate;
+            
+            // Apply the same TabItem style that ScriptTabs uses
+            Style tabItemStyle = new Style(typeof(TabItem));
+            tabItemStyle.Setters.Add(new Setter(Control.FocusVisualStyleProperty, null));
+            
+            ControlTemplate tabTemplate = new ControlTemplate(typeof(TabItem));
+            FrameworkElementFactory borderFactory = new FrameworkElementFactory(typeof(Border));
+            borderFactory.Name = "Border";
+            borderFactory.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(30, 30, 30)));
+            borderFactory.SetValue(Border.BorderThicknessProperty, new Thickness(1, 1, 1, 0));
+            borderFactory.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(60, 60, 60)));
+            borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(8, 8, 0, 0));
+            borderFactory.SetValue(Border.MarginProperty, new Thickness(2, 0, 0, 0));
+            borderFactory.SetValue(Border.PaddingProperty, new Thickness(10, 6, 10, 6));
+            
+            FrameworkElementFactory contentFactory = new FrameworkElementFactory(typeof(ContentPresenter));
+            contentFactory.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            contentFactory.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            contentFactory.SetValue(ContentPresenter.ContentSourceProperty, "Header");
+            borderFactory.AppendChild(contentFactory);
+            
+            tabTemplate.VisualTree = borderFactory;
+            
+            // Add triggers for selected and hover states
+            Trigger selectedTrigger = new Trigger { Property = TabItem.IsSelectedProperty, Value = true };
+            selectedTrigger.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(45, 45, 48)), "Border"));
+            selectedTrigger.Setters.Add(new Setter(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(255, 140, 0)), "Border"));
+            tabTemplate.Triggers.Add(selectedTrigger);
+            
+            Trigger hoverTrigger = new Trigger { Property = TabItem.IsMouseOverProperty, Value = true };
+            hoverTrigger.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(37, 37, 38)), "Border"));
+            tabTemplate.Triggers.Add(hoverTrigger);
+            
+            tabItemStyle.Setters.Add(new Setter(TabItem.TemplateProperty, tabTemplate));
+            
+            Grid.SetRow(tabControl, 1);
+
+            // Define Unicode categories
+            var categories = new Dictionary<string, string[]>
+            {
+                ["Bookmarks"] = _bookmarkedUnicode.ToArray(),
+                ["Arrows"] = new[] { "←", "→", "↑", "↓", "↔", "↕", "⇐", "⇒", "⇑", "⇓", "⇔", "⇕", "⬅", "➡", "⬆", "⬇", "↖", "↗", "↘", "↙", "⟵", "⟶", "⟷", "⮕", "⮐", "⮑", "⮒", "⮓" },
+                ["Shapes"] = new[] { "■", "□", "▢", "▣", "▤", "▥", "▦", "▧", "▨", "▩", "●", "○", "◉", "◎", "◐", "◑", "◒", "◓", "▲", "△", "▼", "▽", "◀", "◁", "▶", "▷", "◆", "◇", "◈", "❖", "★", "☆", "✦", "✧", "✪", "✫", "✬", "✭", "✮", "✯", "⬛", "⬜", "◼", "◻", "▪", "▫" },
+                ["Math"] = new[] { "±", "×", "÷", "≈", "≠", "≡", "≤", "≥", "∞", "√", "∛", "∜", "∑", "∏", "∫", "∂", "∆", "∇", "π", "°", "′", "″", "‰", "∅", "∈", "∉", "∩", "∪", "⊂", "⊃", "⊆", "⊇", "⊕", "⊗", "⊥", "∀", "∃", "∄", "∧", "∨", "¬", "⊤", "⊥", "⊢", "⊣" },
+                ["Greek"] = new[] { "α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π", "ρ", "σ", "τ", "υ", "φ", "χ", "ψ", "ω", "Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ", "Ν", "Ξ", "Ο", "Π", "Ρ", "Σ", "Τ", "Υ", "Φ", "Χ", "Ψ", "Ω" },
+                ["Box Drawing"] = new[] { "─", "━", "│", "┃", "┄", "┅", "┆", "┇", "┈", "┉", "┊", "┋", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼", "═", "║", "╔", "╗", "╚", "╝", "╠", "╣", "╦", "╩", "╬", "╒", "╓", "╕", "╖", "╘", "╙", "╛", "╜", "╞", "╟", "╡", "╢", "╤", "╥", "╧", "╨", "╪", "╫" },
+                ["Symbols"] = new[] { "✓", "✔", "✕", "✖", "✗", "✘", "☐", "☑", "☒", "♠", "♣", "♥", "♦", "♤", "♧", "♡", "♢", "☀", "☁", "☂", "☃", "☄", "☎", "☏", "☮", "☯", "☸", "☺", "☻", "☼", "⚠", "⚡", "⚙", "⚛", "⚝", "⚡", "✂", "✏", "✉", "✈", "♫", "♬", "⚔", "⚖", "⛏", "⚒" },
+                ["Misc"] = new[] { "•", "·", "‣", "⁃", "※", "∴", "∵", "‖", "¦", "…", "‥", "⋯", "⋮", "⋰", "⋱", "¶", "§", "†", "‡", "©", "®", "™", "℃", "℉", "№", "℗", "℠", "Ω", "℧", "℮", "‰", "‱", "′", "″", "‴", "⁗", "‼", "⁇", "⁈", "⁉", "⁊" },
+                ["Currency"] = new[] { "$", "¢", "£", "¥", "€", "₹", "₽", "₿", "฿", "₴", "₦", "₨", "₩", "₪", "₱", "₡", "₵", "₸", "₺", "₼", "₾", "﷼" },
+                ["Emoji"] = new[] { "😀", "😁", "😂", "😃", "😄", "😅", "😆", "😇", "😈", "😉", "😊", "😋", "😌", "😍", "😎", "😏", "😐", "😑", "😒", "😓", "😔", "😕", "😖", "😗", "😘", "😙", "😚", "😛", "😜", "😝", "😞", "😟", "😠", "😡", "😢", "😣", "😤", "😥", "😦", "😧" },
+                ["Fractions"] = new[] { "½", "⅓", "⅔", "¼", "¾", "⅕", "⅖", "⅗", "⅘", "⅙", "⅚", "⅐", "⅛", "⅜", "⅝", "⅞", "⅑", "⅒" },
+                ["Superscript"] = new[] { "⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁺", "⁻", "⁼", "⁽", "⁾", "ⁿ", "ⁱ" },
+                ["Subscript"] = new[] { "₀", "₁", "₂", "₃", "₄", "₅", "₆", "₇", "₈", "₉", "₊", "₋", "₌", "₍", "₎", "ₐ", "ₑ", "ₒ", "ₓ", "ₔ" },
+                ["Lines"] = new[] { "―", "‒", "–", "—", "―", "‖", "∣", "∥", "╱", "╲", "╳", "⁄", "∕", "⧵", "⧹" }
+            };
+
+            foreach (var category in categories)
+            {
+                // Create header TextBlock with orange for selected, purple for hover
+                TextBlock headerText = new TextBlock { Text = category.Key, Foreground = Brushes.White };
+                
+                Style headerStyle = new Style(typeof(TextBlock));
+                
+                DataTrigger selectedDataTrigger = new DataTrigger();
+                selectedDataTrigger.Binding = new System.Windows.Data.Binding("IsSelected") 
+                { 
+                    RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(TabItem), 1) 
+                };
+                selectedDataTrigger.Value = true;
+                selectedDataTrigger.Setters.Add(new Setter(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(255, 140, 0))));
+                headerStyle.Triggers.Add(selectedDataTrigger);
+                
+                MultiDataTrigger hoverDataTrigger = new MultiDataTrigger();
+                hoverDataTrigger.Conditions.Add(new System.Windows.Condition(new System.Windows.Data.Binding("IsSelected") 
+                { 
+                    RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(TabItem), 1) 
+                }, false));
+                hoverDataTrigger.Conditions.Add(new System.Windows.Condition(new System.Windows.Data.Binding("IsMouseOver") 
+                { 
+                    RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(TabItem), 1) 
+                }, true));
+                hoverDataTrigger.Setters.Add(new Setter(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(147, 112, 219))));
+                headerStyle.Triggers.Add(hoverDataTrigger);
+                
+                headerText.Style = headerStyle;
+                
+                TabItem tabItem = new TabItem
+                {
+                    Header = headerText,
+                    Style = tabItemStyle
+                };
+
+                ScrollViewer scrollViewer = new ScrollViewer 
+                { 
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    Background = new SolidColorBrush(Color.FromRgb(30, 30, 30))
+                };
+                
+                // Override all ScrollBar resource keys to make it dark
+                var darkBrush = new SolidColorBrush(Color.FromRgb(20, 20, 20));
+                var thumbBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60));
+                var hoverBrush = new SolidColorBrush(Color.FromRgb(80, 80, 80));
+                
+                scrollViewer.Resources.Add(SystemColors.ScrollBarBrushKey, darkBrush);
+                scrollViewer.Resources.Add(SystemColors.ControlBrushKey, darkBrush);
+                scrollViewer.Resources.Add(SystemColors.ControlLightBrushKey, darkBrush);
+                scrollViewer.Resources.Add(SystemColors.ControlLightLightBrushKey, darkBrush);
+                scrollViewer.Resources.Add(SystemColors.ControlDarkBrushKey, darkBrush);
+                scrollViewer.Resources.Add(SystemColors.ControlDarkDarkBrushKey, darkBrush);
+                
+                WrapPanel wrapPanel = new WrapPanel { Margin = new Thickness(10), Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)) };
+
+                foreach (var symbol in category.Value)
+                {
+                    bool isBookmarkedTab = category.Key == "Bookmarks";
+                    bool isBookmarked = _bookmarkedUnicode.Contains(symbol);
+                    
+                    Button symbolBtn = new Button
+                    {
+                        Content = symbol,
+                        Width = 45,
+                        Height = 45,
+                        Margin = new Thickness(5),
+                        FontSize = 20,
+                        Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                        Foreground = Brushes.White,
+                        BorderThickness = new Thickness(isBookmarked ? 2 : 1),
+                        BorderBrush = new SolidColorBrush(isBookmarked ? Color.FromRgb(255, 140, 0) : Color.FromRgb(80, 80, 80)),
+                        Tag = symbol
+                    };
+
+                    // Left click - Insert
+                    symbolBtn.Click += (s, e) =>
+                    {
+                        int caretOffset = editor.CaretOffset;
+                        editor.Document.Insert(caretOffset, symbol);
+                        editor.Focus();
+                    };
+
+                    // Right click - Context menu with dark styling
+                    ContextMenu symbolMenu = new ContextMenu 
+                    { 
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                        BorderThickness = new Thickness(1),
+                        Foreground = Brushes.White,
+                        Padding = new Thickness(0)
+                    };
+                    
+                    // Create style to remove white sidebar
+                    Style menuStyle = new Style(typeof(ContextMenu));
+                    ControlTemplate menuTemplate = new ControlTemplate(typeof(ContextMenu));
+                    FrameworkElementFactory menuBorderFactory = new FrameworkElementFactory(typeof(Border));
+                    menuBorderFactory.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(45, 45, 48)));
+                    menuBorderFactory.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(60, 60, 60)));
+                    menuBorderFactory.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+                    
+                    FrameworkElementFactory menuStackFactory = new FrameworkElementFactory(typeof(StackPanel));
+                    menuStackFactory.SetValue(StackPanel.IsItemsHostProperty, true);
+                    menuStackFactory.SetValue(StackPanel.BackgroundProperty, new SolidColorBrush(Color.FromRgb(45, 45, 48)));
+                    menuBorderFactory.AppendChild(menuStackFactory);
+                    
+                    menuTemplate.VisualTree = menuBorderFactory;
+                    menuStyle.Setters.Add(new Setter(ContextMenu.TemplateProperty, menuTemplate));
+                    symbolMenu.Style = menuStyle;
+                    
+                    MenuItem insertItem = new MenuItem 
+                    { 
+                        Header = "Insert", 
+                        Foreground = Brushes.White,
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        Padding = new Thickness(8, 4, 8, 4)
+                    };
+                    insertItem.Click += (s, e) =>
+                    {
+                        int caretOffset = editor.CaretOffset;
+                        editor.Document.Insert(caretOffset, symbol);
+                        editor.Focus();
+                    };
+                    
+                    MenuItem copyItem = new MenuItem 
+                    { 
+                        Header = "Copy", 
+                        Foreground = Brushes.White,
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        Padding = new Thickness(8, 4, 8, 4)
+                    };
+                    copyItem.Click += (s, e) => System.Windows.Clipboard.SetText(symbol);
+                    
+                    bool currentlyBookmarked = _bookmarkedUnicode.Contains(symbol);
+                    MenuItem bookmarkItem = new MenuItem 
+                    { 
+                        Header = currentlyBookmarked ? "Remove Bookmark" : "Add Bookmark", 
+                        Foreground = Brushes.White,
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        Padding = new Thickness(8, 4, 8, 4)
+                    };
+                    bookmarkItem.Click += (s, e) =>
+                    {
+                        if (_bookmarkedUnicode.Contains(symbol))
+                        {
+                            _bookmarkedUnicode.Remove(symbol);
+                        }
+                        else
+                        {
+                            _bookmarkedUnicode.Add(symbol);
+                        }
+                        SaveUnicodeBookmarks();
+                        
+                        // Update the button border without closing the window
+                        bool nowBookmarked = _bookmarkedUnicode.Contains(symbol);
+                        
+                        // Find and update all buttons with this symbol across all tabs
+                        foreach (TabItem ti in tabControl.Items)
+                        {
+                            if (ti.Content is ScrollViewer sv && sv.Content is WrapPanel wp)
+                            {
+                                foreach (UIElement child in wp.Children)
+                                {
+                                    if (child is Button b && b.Tag.ToString() == symbol)
+                                    {
+                                        b.BorderThickness = new Thickness(nowBookmarked ? 2 : 1);
+                                        b.BorderBrush = new SolidColorBrush(nowBookmarked ? Color.FromRgb(255, 140, 0) : Color.FromRgb(80, 80, 80));
+                                        
+                                        // Update context menu text
+                                        if (b.ContextMenu != null)
+                                        {
+                                            foreach (var item in b.ContextMenu.Items)
+                                            {
+                                                if (item is MenuItem mi && (mi.Header.ToString().Contains("Bookmark")))
+                                                {
+                                                    mi.Header = nowBookmarked ? "Remove Bookmark" : "Add Bookmark";
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Refresh Bookmarks tab
+                        foreach (TabItem ti in tabControl.Items)
+                        {
+                            if (ti.Header is TextBlock tb && tb.Text == "Bookmarks")
+                            {
+                                if (ti.Content is ScrollViewer sv && sv.Content is WrapPanel wp)
+                                {
+                                    wp.Children.Clear();
+                                    foreach (var bookmarkedSymbol in _bookmarkedUnicode)
+                                    {
+                                        Button newBtn = new Button
+                                        {
+                                            Content = bookmarkedSymbol,
+                                            Width = 45,
+                                            Height = 45,
+                                            Margin = new Thickness(5),
+                                            FontSize = 20,
+                                            Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                                            Foreground = Brushes.White,
+                                            BorderThickness = new Thickness(2),
+                                            BorderBrush = new SolidColorBrush(Color.FromRgb(255, 140, 0)),
+                                            Tag = bookmarkedSymbol
+                                        };
+                                        
+                                        // Left click - Insert
+                                        newBtn.Click += (s2, e2) =>
+                                        {
+                                            int caretOffset = editor.CaretOffset;
+                                            editor.Document.Insert(caretOffset, bookmarkedSymbol);
+                                            editor.Focus();
+                                        };
+                                        
+                                        // Right click menu
+                                        ContextMenu newMenu = new ContextMenu 
+                                        { 
+                                            Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                                            BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                                            BorderThickness = new Thickness(1),
+                                            Foreground = Brushes.White,
+                                            Padding = new Thickness(0)
+                                        };
+                                        
+                                        Style newMenuStyle = new Style(typeof(ContextMenu));
+                                        ControlTemplate newMenuTemplate = new ControlTemplate(typeof(ContextMenu));
+                                        FrameworkElementFactory newBorderFactory = new FrameworkElementFactory(typeof(Border));
+                                        newBorderFactory.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(45, 45, 48)));
+                                        newBorderFactory.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(60, 60, 60)));
+                                        newBorderFactory.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+                                        FrameworkElementFactory newStackFactory = new FrameworkElementFactory(typeof(StackPanel));
+                                        newStackFactory.SetValue(StackPanel.IsItemsHostProperty, true);
+                                        newStackFactory.SetValue(StackPanel.BackgroundProperty, new SolidColorBrush(Color.FromRgb(45, 45, 48)));
+                                        newBorderFactory.AppendChild(newStackFactory);
+                                        newMenuTemplate.VisualTree = newBorderFactory;
+                                        newMenuStyle.Setters.Add(new Setter(ContextMenu.TemplateProperty, newMenuTemplate));
+                                        newMenu.Style = newMenuStyle;
+                                        
+                                        MenuItem newInsertItem = new MenuItem 
+                                        { 
+                                            Header = "Insert", 
+                                            Foreground = Brushes.White,
+                                            Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                                            Padding = new Thickness(8, 4, 8, 4)
+                                        };
+                                        newInsertItem.Click += (s2, e2) =>
+                                        {
+                                            int caretOffset = editor.CaretOffset;
+                                            editor.Document.Insert(caretOffset, bookmarkedSymbol);
+                                            editor.Focus();
+                                        };
+                                        
+                                        MenuItem newCopyItem = new MenuItem 
+                                        { 
+                                            Header = "Copy", 
+                                            Foreground = Brushes.White,
+                                            Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                                            Padding = new Thickness(8, 4, 8, 4)
+                                        };
+                                        newCopyItem.Click += (s2, e2) => System.Windows.Clipboard.SetText(bookmarkedSymbol);
+                                        
+                                        MenuItem newBookmarkItem = new MenuItem 
+                                        { 
+                                            Header = "Remove Bookmark", 
+                                            Foreground = Brushes.White,
+                                            Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                                            Padding = new Thickness(8, 4, 8, 4)
+                                        };
+                                        newBookmarkItem.Click += (s3, e3) =>
+                                        {
+                                            // Remove from bookmarks
+                                            _bookmarkedUnicode.Remove(bookmarkedSymbol);
+                                            SaveUnicodeBookmarks();
+                                            
+                                            // Update all tabs
+                                            bool nowBookmarked = _bookmarkedUnicode.Contains(bookmarkedSymbol);
+                                            foreach (TabItem ti in tabControl.Items)
+                                            {
+                                                if (ti.Content is ScrollViewer sv && sv.Content is WrapPanel wp)
+                                                {
+                                                    foreach (UIElement child in wp.Children)
+                                                    {
+                                                        if (child is Button b && b.Tag.ToString() == bookmarkedSymbol)
+                                                        {
+                                                            b.BorderThickness = new Thickness(nowBookmarked ? 2 : 1);
+                                                            b.BorderBrush = new SolidColorBrush(nowBookmarked ? Color.FromRgb(255, 140, 0) : Color.FromRgb(80, 80, 80));
+                                                            
+                                                            if (b.ContextMenu != null)
+                                                            {
+                                                                foreach (var item in b.ContextMenu.Items)
+                                                                {
+                                                                    if (item is MenuItem mi && (mi.Header.ToString().Contains("Bookmark")))
+                                                                    {
+                                                                        mi.Header = nowBookmarked ? "Remove Bookmark" : "Add Bookmark";
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // Refresh Bookmarks tab by removing this button
+                                            foreach (TabItem ti in tabControl.Items)
+                                            {
+                                                if (ti.Header is TextBlock headerTb && headerTb.Text == "Bookmarks")
+                                                {
+                                                    if (ti.Content is ScrollViewer sv && sv.Content is WrapPanel wp)
+                                                    {
+                                                        wp.Children.Clear();
+                                                        foreach (var bm in _bookmarkedUnicode)
+                                                        {
+                                                            Button recreateBtn = new Button
+                                                            {
+                                                                Content = bm,
+                                                                Width = 45,
+                                                                Height = 45,
+                                                                Margin = new Thickness(5),
+                                                                FontSize = 20,
+                                                                Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+                                                                Foreground = Brushes.White,
+                                                                BorderThickness = new Thickness(2),
+                                                                BorderBrush = new SolidColorBrush(Color.FromRgb(255, 140, 0)),
+                                                                Tag = bm
+                                                            };
+                                                            recreateBtn.Click += (s4, e4) =>
+                                                            {
+                                                                int caretOffset = editor.CaretOffset;
+                                                                editor.Document.Insert(caretOffset, bm);
+                                                                editor.Focus();
+                                                            };
+                                                            wp.Children.Add(recreateBtn);
+                                                        }
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        };
+                                        
+                                        newMenu.Items.Add(newInsertItem);
+                                        newMenu.Items.Add(newCopyItem);
+                                        newMenu.Items.Add(new Separator());
+                                        newMenu.Items.Add(newBookmarkItem);
+                                        newBtn.ContextMenu = newMenu;
+                                        
+                                        wp.Children.Add(newBtn);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    };
+                    
+                    symbolMenu.Items.Add(insertItem);
+                    symbolMenu.Items.Add(copyItem);
+                    symbolMenu.Items.Add(new Separator());
+                    symbolMenu.Items.Add(bookmarkItem);
+                    symbolBtn.ContextMenu = symbolMenu;
+
+                    wrapPanel.Children.Add(symbolBtn);
+                }
+
+                scrollViewer.Content = wrapPanel;
+                tabItem.Content = scrollViewer;
+                tabControl.Items.Add(tabItem);
+            }
+
+            mainGrid.Children.Add(tabControl);
+
+            unicodeWindow.Content = mainGrid;
+            unicodeWindow.ShowDialog();
+        }
+
         private TextEditor? GetCurrentEditor() => (ScriptTabs.SelectedItem as TabItem)?.Content as TextEditor;
 
         private void Options_Click(object sender, RoutedEventArgs e)
@@ -519,7 +1577,8 @@ namespace SynapMc
                     WindowStartupLocation = WindowStartupLocation.CenterOwner, 
                     Owner = this, 
                     Foreground = Brushes.White, 
-                    BorderThickness = new Thickness(1) 
+                    BorderThickness = new Thickness(1),
+                    Topmost = true
                 };
                 
                 var gradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
@@ -596,15 +1655,27 @@ namespace SynapMc
         private void OpenFile_Click(object sender, RoutedEventArgs e) { var ofd = new OpenFileDialog { Filter = "Lua (*.lua)|*.lua|All|*.*" }; if (ofd.ShowDialog() == true) AddNewTab(Path.GetFileName(ofd.FileName), File.ReadAllText(ofd.FileName)); }
         private void SaveFile_Click(object sender, RoutedEventArgs e)
         {
-            if (GetCurrentEditor() is TextEditor ed)
+            if (GetCurrentEditor() is TextEditor ed && ScriptTabs.SelectedItem is TabItem currentTab)
             {
-                var sfd = new SaveFileDialog { Filter = "Lua (*.lua)|*.lua|All|*.*", InitialDirectory = _scriptsRoot, FileName = "script.lua" };
-                if (sfd.ShowDialog() == true) 
-                { 
-                    File.WriteAllText(sfd.FileName, ed.Text); 
-                    if (ScriptTabs.SelectedItem is TabItem t && t.Header is StackPanel sp && sp.Children[0] is TextBlock tb) 
-                        tb.Text = Path.GetFileName(sfd.FileName); 
-                    LoadScriptTree(); 
+                // Check if this tab has an associated file path
+                if (currentTab.Tag is string existingPath && File.Exists(existingPath))
+                {
+                    // File already saved, just save to same location
+                    File.WriteAllText(existingPath, ed.Text);
+                    LoadScriptTree();
+                }
+                else
+                {
+                    // New file, show save dialog
+                    var sfd = new SaveFileDialog { Filter = "Lua (*.lua)|*.lua|All|*.*", InitialDirectory = _scriptsRoot, FileName = "script.lua" };
+                    if (sfd.ShowDialog() == true) 
+                    { 
+                        File.WriteAllText(sfd.FileName, ed.Text);
+                        currentTab.Tag = sfd.FileName; // Store the path
+                        if (currentTab.Header is StackPanel sp && sp.Children[0] is TextBlock tb) 
+                            tb.Text = Path.GetFileName(sfd.FileName).Replace(".lua", ""); 
+                        LoadScriptTree(); 
+                    }
                 }
             }
         }
@@ -620,10 +1691,35 @@ namespace SynapMc
             bool isFolder = Directory.Exists(p);
             string name = Path.GetFileName(p);
             
+            // Check if there's content (file has data or folder is not empty)
+            bool hasContent = false;
+            if (isFolder)
+            {
+                var dirInfo = new DirectoryInfo(p);
+                hasContent = dirInfo.GetFiles("*", SearchOption.AllDirectories).Length > 0 || 
+                             dirInfo.GetDirectories("*", SearchOption.AllDirectories).Length > 0;
+            }
+            else
+            {
+                var fileInfo = new FileInfo(p);
+                hasContent = fileInfo.Length > 0;
+            }
+            
+            // If don't ask setting is on and no content, delete immediately
+            if (_dontAskDeleteConfirmation && !hasContent)
+            {
+                if (Directory.Exists(p))
+                    Directory.Delete(p, true);
+                else
+                    File.Delete(p);
+                LoadScriptTree();
+                return;
+            }
+            
             var dialog = new Window 
             { 
                 Width = 420, 
-                Height = isFolder ? 240 : 260, 
+                Height = isFolder ? 280 : 300, 
                 Title = "Delete", 
                 WindowStyle = WindowStyle.None, 
                 ResizeMode = ResizeMode.NoResize, 
@@ -631,7 +1727,8 @@ namespace SynapMc
                 WindowStartupLocation = WindowStartupLocation.CenterOwner, 
                 Owner = this, 
                 Foreground = Brushes.White, 
-                BorderThickness = new Thickness(1) 
+                BorderThickness = new Thickness(1),
+                Topmost = true
             };
             
             var gradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
@@ -689,12 +1786,22 @@ namespace SynapMc
             var pathBlock = new TextBlock 
             { 
                 Text = $"Path: {p}", 
-                Margin = new Thickness(0, 0, 0, 20), 
+                Margin = new Thickness(0, 0, 0, 15), 
                 FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150))
             };
             stackPanel.Children.Add(pathBlock);
+            
+            // Add checkbox for "Don't ask me again"
+            CheckBox dontAskCheckBox = new CheckBox
+            {
+                Content = "Don't ask me again",
+                Foreground = Brushes.White,
+                Margin = new Thickness(0, 0, 0, 15),
+                IsChecked = false
+            };
+            stackPanel.Children.Add(dontAskCheckBox);
 
             var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             
@@ -712,6 +1819,12 @@ namespace SynapMc
             };
             deleteButton.Click += (s, ev) => 
             { 
+                if (dontAskCheckBox.IsChecked == true)
+                {
+                    _dontAskDeleteConfirmation = true;
+                    SaveSettings();
+                }
+                
                 if (Directory.Exists(p)) 
                     Directory.Delete(p, true); 
                 else 
@@ -749,9 +1862,168 @@ namespace SynapMc
         private void ListContext_NewFolder_Click(object sender, RoutedEventArgs e) => CreateNewFile((ScriptTree.SelectedItem as TreeViewItem)?.Tag?.ToString() ?? _scriptsRoot, true);
         private void ListContext_Refresh_Click(object sender, RoutedEventArgs e) => LoadScriptTree();
 
+        private void SearchWorkspace_Click(object sender, RoutedEventArgs e)
+        {
+            WorkspaceSearchInput.Focus();
+        }
+        
+        private void WorkspaceSearchInput_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (WorkspaceSearchInput.Text == "Search...")
+            {
+                WorkspaceSearchInput.Text = "";
+                WorkspaceSearchInput.Foreground = Brushes.White;
+            }
+        }
+        
+        private void WorkspaceSearchInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(WorkspaceSearchInput.Text))
+            {
+                WorkspaceSearchInput.Text = "Search...";
+                WorkspaceSearchInput.Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 170));
+            }
+        }
+        
+        private void WorkspaceSearchInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && WorkspaceSearchInput.Text != "Search...")
+            {
+                string searchQuery = WorkspaceSearchInput.Text;
+                if (!string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    SearchAndHighlightInTree(searchQuery.ToLower());
+                }
+            }
+            else if (e.Key == Key.Escape)
+            {
+                WorkspaceSearchInput.Text = "";
+                ScriptTree.Focus();
+            }
+        }
+        
+        private void CloseWorkspaceSearch_Click(object sender, RoutedEventArgs e)
+        {
+            // Not needed anymore since search is always visible
+        }
+        
+        private void WorkspaceSearchTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            // Not needed anymore - replaced by WorkspaceSearchInput_KeyDown
+        }
+
+        private void SearchAndHighlightInTree(string query)
+        {
+            // Expand all items and look for matches
+            bool foundMatch = false;
+            foreach (TreeViewItem item in ScriptTree.Items)
+            {
+                if (SearchTreeViewItem(item, query))
+                {
+                    foundMatch = true;
+                    break;
+                }
+            }
+            
+            if (!foundMatch)
+            {
+                System.Windows.MessageBox.Show($"No files or folders found matching '{query}'", "Search", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        private bool SearchTreeViewItem(TreeViewItem item, string query)
+        {
+            string itemPath = item.Tag?.ToString() ?? "";
+            string itemName = Path.GetFileName(itemPath).ToLower();
+            
+            // Check if current item matches
+            if (itemName.Contains(query))
+            {
+                item.IsSelected = true;
+                item.BringIntoView();
+                
+                // Expand parent items only
+                TreeViewItem? parent = FindVisualParent<TreeViewItem>(item);
+                while (parent != null)
+                {
+                    parent.IsExpanded = true;
+                    parent = FindVisualParent<TreeViewItem>(parent);
+                }
+                
+                return true;
+            }
+            
+            // Search children without expanding this item first
+            bool foundInChildren = false;
+            foreach (var child in item.Items)
+            {
+                if (child is TreeViewItem childItem && SearchTreeViewItem(childItem, query))
+                {
+                    foundInChildren = true;
+                    item.IsExpanded = true; // Only expand if a child matched
+                    break;
+                }
+            }
+            
+            return foundInChildren;
+        }
+
+        private void AddBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            var folderDialog = new System.Windows.Forms.FolderBrowserDialog
+            {
+                Description = "Select a folder to bookmark",
+                ShowNewFolderButton = false
+            };
+            
+            if (folderDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                string selectedPath = folderDialog.SelectedPath;
+                if (!_bookmarkedFolders.Contains(selectedPath))
+                {
+                    _bookmarkedFolders.Add(selectedPath);
+                    SaveBookmarks();
+                    LoadScriptTree();
+                }
+            }
+        }
+
+        private void ToggleBookmark(string folderPath)
+        {
+            if (_bookmarkedFolders.Contains(folderPath))
+            {
+                _bookmarkedFolders.Remove(folderPath);
+            }
+            else
+            {
+                _bookmarkedFolders.Add(folderPath);
+            }
+            SaveBookmarks();
+            LoadScriptTree();
+        }
+
+        private void OpenInExplorer_Click(object sender, RoutedEventArgs e)
+        {
+            if (ScriptTree.SelectedItem is TreeViewItem selectedItem)
+            {
+                string path = selectedItem.Tag?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(path))
+                {
+                    if (File.Exists(path))
+                    {
+                        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+                    }
+                    else if (Directory.Exists(path))
+                    {
+                        System.Diagnostics.Process.Start("explorer.exe", $"\"{path}\"");
+                    }
+                }
+            }
+        }
+
         private bool ShowConfirmDialog(string title, string message)
         {
-            Window w = new Window { Width = 350, Height = 180, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)), WindowStartupLocation = WindowStartupLocation.CenterOwner, Owner = this, Foreground = Brushes.White, BorderThickness = new Thickness(1) };
+            Window w = new Window { Width = 350, Height = 180, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)), WindowStartupLocation = WindowStartupLocation.CenterOwner, Owner = this, Foreground = Brushes.White, BorderThickness = new Thickness(1), Topmost = true };
             var gradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
             gradient.GradientStops.Add(new GradientStop(Color.FromRgb(0, 217, 255), 0));
             gradient.GradientStops.Add(new GradientStop(Color.FromRgb(123, 104, 238), 1));
@@ -760,16 +2032,49 @@ namespace SynapMc
             StackPanel s = new StackPanel { Margin = new Thickness(15) };
             TextBlock titleBlock = new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0)), Margin = new Thickness(0, 0, 0, 15) };
             s.Children.Add(titleBlock);
-            s.Children.Add(new TextBlock { Text = message, Margin = new Thickness(0, 0, 0, 20), TextWrapping = TextWrapping.Wrap });
-
-            StackPanel b = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            Button yes = new Button { Content = "Yes", Width = 80, Height = 30, Margin = new Thickness(0, 0, 10, 0), Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(255, 140, 0)) };
-            yes.Click += (se, ev) => { w.DialogResult = true; w.Close(); };
-            Button no = new Button { Content = "No", Width = 80, Height = 30, Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) };
-            no.Click += (se, ev) => { w.DialogResult = false; w.Close(); };
-            b.Children.Add(yes); b.Children.Add(no); s.Children.Add(b);
+            TextBlock msg = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 20) };
+            s.Children.Add(msg);
+            StackPanel btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            bool result = false;
+            Button yes = new Button { Content = "Yes", Width = 70, Height = 30, Margin = new Thickness(0, 0, 10, 0), Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) };
+            yes.Click += (a, b) => { result = true; w.Close(); };
+            Button no = new Button { Content = "No", Width = 70, Height = 30, Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) };
+            no.Click += (a, b) => w.Close();
+            btns.Children.Add(yes); btns.Children.Add(no);
+            s.Children.Add(btns);
             w.Content = s;
-            return w.ShowDialog() == true;
+            w.ShowDialog();
+            return result;
+        }
+
+        private (bool confirmed, bool dontAskAgain) ShowConfirmDialogWithCheckbox(string title, string message, string checkboxText)
+        {
+            Window w = new Window { Width = 350, Height = 220, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)), WindowStartupLocation = WindowStartupLocation.CenterOwner, Owner = this, Foreground = Brushes.White, BorderThickness = new Thickness(1), Topmost = true };
+            var gradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            gradient.GradientStops.Add(new GradientStop(Color.FromRgb(0, 217, 255), 0));
+            gradient.GradientStops.Add(new GradientStop(Color.FromRgb(123, 104, 238), 1));
+            w.BorderBrush = gradient;
+
+            StackPanel s = new StackPanel { Margin = new Thickness(15) };
+            TextBlock titleBlock = new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0)), Margin = new Thickness(0, 0, 0, 15) };
+            s.Children.Add(titleBlock);
+            TextBlock msg = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 15) };
+            s.Children.Add(msg);
+            
+            CheckBox checkbox = new CheckBox { Content = checkboxText, Foreground = Brushes.White, Margin = new Thickness(0, 0, 0, 20), IsChecked = false };
+            s.Children.Add(checkbox);
+            
+            StackPanel btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            bool result = false;
+            Button yes = new Button { Content = "Yes", Width = 70, Height = 30, Margin = new Thickness(0, 0, 10, 0), Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) };
+            yes.Click += (a, b) => { result = true; w.Close(); };
+            Button no = new Button { Content = "No", Width = 70, Height = 30, Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)), Foreground = Brushes.White, BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)) };
+            no.Click += (a, b) => w.Close();
+            btns.Children.Add(yes); btns.Children.Add(no);
+            s.Children.Add(btns);
+            w.Content = s;
+            w.ShowDialog();
+            return (result, checkbox.IsChecked == true);
         }
 
         private void SearchNext_Click(object sender, RoutedEventArgs e)
@@ -1314,6 +2619,109 @@ namespace SynapMc
             }
             return null;
         }
+        
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // Temp save all unsaved scripts
+            TempSaveAllScripts();
+        }
+        
+        private void TempSaveAllScripts()
+        {
+            foreach (TabItem tab in ScriptTabs.Items)
+            {
+                if (tab.Content is TextEditor editor)
+                {
+                    string tabName = "";
+                    if (tab.Header is StackPanel sp && sp.Children[0] is TextBlock tb)
+                        tabName = tb.Text;
+                    
+                    // Save temp file
+                    string tempFile = Path.Combine(_tempSavePath, $"{Guid.NewGuid()}.lua");
+                    File.WriteAllText(tempFile, editor.Text);
+                }
+            }
+        }
+        
+        private void SaveSession()
+        {
+            try
+            {
+                var session = new List<Dictionary<string, string>>();
+                
+                foreach (TabItem tab in ScriptTabs.Items)
+                {
+                    var tabInfo = new Dictionary<string, string>();
+                    
+                    if (tab.Header is StackPanel sp && sp.Children[0] is TextBlock tb)
+                        tabInfo["Title"] = tb.Text;
+                    
+                    if (tab.Tag is string filePath)
+                        tabInfo["FilePath"] = filePath;
+                    
+                    if (tab.Content is TextEditor editor)
+                    {
+                        // Save temp content
+                        string tempFile = Path.Combine(_tempSavePath, $"{Guid.NewGuid()}.lua");
+                        File.WriteAllText(tempFile, editor.Text);
+                        tabInfo["TempFile"] = tempFile;
+                    }
+                    
+                    session.Add(tabInfo);
+                }
+                
+                string json = JsonSerializer.Serialize(session, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_sessionPath, json);
+            }
+            catch { }
+        }
+        
+        private void RestoreSession()
+        {
+            try
+            {
+                if (!File.Exists(_sessionPath))
+                {
+                    AddNewTab(); // No session, create default tab
+                    return;
+                }
+                
+                string json = File.ReadAllText(_sessionPath);
+                var session = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(json);
+                
+                if (session == null || session.Count == 0)
+                {
+                    AddNewTab();
+                    return;
+                }
+                
+                foreach (var tabInfo in session)
+                {
+                    string title = tabInfo.ContainsKey("Title") ? tabInfo["Title"] : null;
+                    string filePath = tabInfo.ContainsKey("FilePath") ? tabInfo["FilePath"] : null;
+                    string tempFile = tabInfo.ContainsKey("TempFile") ? tabInfo["TempFile"] : null;
+                    
+                    string content = "";
+                    
+                    // Load content from temp file if it exists
+                    if (!string.IsNullOrEmpty(tempFile) && File.Exists(tempFile))
+                    {
+                        content = File.ReadAllText(tempFile);
+                        File.Delete(tempFile); // Clean up temp file
+                    }
+                    else if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                    {
+                        content = File.ReadAllText(filePath);
+                    }
+                    
+                    AddNewTab(title, content, filePath);
+                }
+            }
+            catch
+            {
+                AddNewTab(); // Error loading session, create default tab
+            }
+        }
 
         private static ListBoxItem? GetListBoxItemFromPoint(ListBox listBox, Point point)
         {
@@ -1332,7 +2740,7 @@ namespace SynapMc
     {
         public static string Show(string title, string msg, string def = "")
         {
-            Window w = new Window { Width = 300, Height = 150, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(40, 40, 40)), WindowStartupLocation = WindowStartupLocation.CenterScreen, Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(60,60,60)), BorderThickness = new Thickness(1) };
+            Window w = new Window { Width = 300, Height = 150, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(40, 40, 40)), WindowStartupLocation = WindowStartupLocation.CenterScreen, Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(60,60,60)), BorderThickness = new Thickness(1), Topmost = true };
             StackPanel s = new StackPanel { Margin = new Thickness(10) };
             s.Children.Add(new TextBlock { Text = msg, Margin = new Thickness(0,0,0,10) });
             TextBox t = new TextBox { Text = def, Background = new SolidColorBrush(Color.FromRgb(30,30,30)), Foreground = Brushes.White, BorderBrush = Brushes.Gray, Padding = new Thickness(2) };
@@ -1386,6 +2794,43 @@ namespace SynapMc
                     }
                     index += global.Length;
                 }
+            }
+        }
+    }
+    
+    public class HexColorHighlighter : DocumentColorizingTransformer
+    {
+        private static readonly Regex HexColorRegex = new Regex(@"0x([0-9A-Fa-f]{6})\b", RegexOptions.Compiled);
+
+        protected override void ColorizeLine(DocumentLine line)
+        {
+            int lineStartOffset = line.Offset;
+            string text = CurrentContext.Document.GetText(line);
+            
+            foreach (Match match in HexColorRegex.Matches(text))
+            {
+                string hexValue = match.Groups[1].Value;
+                
+                // Parse hex color (format: RRGGBB)
+                byte r = Convert.ToByte(hexValue.Substring(0, 2), 16);
+                byte g = Convert.ToByte(hexValue.Substring(2, 2), 16);
+                byte b = Convert.ToByte(hexValue.Substring(4, 2), 16);
+                
+                Color color = Color.FromRgb(r, g, b);
+                
+                // Calculate brightness to determine if we should use black or white text
+                double brightness = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                Color textColor = brightness > 0.5 ? Colors.Black : Colors.White;
+                
+                ChangeLinePart(
+                    lineStartOffset + match.Index,
+                    lineStartOffset + match.Index + match.Length,
+                    element =>
+                    {
+                        element.TextRunProperties.SetBackgroundBrush(new SolidColorBrush(color));
+                        element.TextRunProperties.SetForegroundBrush(new SolidColorBrush(textColor));
+                    }
+                );
             }
         }
     }
