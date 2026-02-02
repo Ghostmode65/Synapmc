@@ -3,6 +3,7 @@
 Synapmc a lua minecraft loader for jsmacros.<br>
 ![Logo](dotnet/logo.png)
 
+![Logo](https://github.com/Ghostmode65/Synapmc/blob/main/bin/window.png)
 
 For info on installing and connecting look at the wiki. <br>
 https://github.com/Ghostmode65/Synapmc/wiki/<br>
