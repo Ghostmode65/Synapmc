@@ -2537,7 +2537,8 @@ namespace SynapMc
                     }
                     
                     var stream = clientInfo.Client.GetStream();
-                    byte[] data = Encoding.UTF8.GetBytes(command + "\n");
+                    string singleLineCommand = command.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+                    byte[] data = Encoding.UTF8.GetBytes(singleLineCommand + "\n");
                     await stream.WriteAsync(data, 0, data.Length);
                     await stream.FlushAsync();
                 }
